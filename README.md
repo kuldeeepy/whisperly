@@ -1,7 +1,7 @@
 # flow
 
-Push-to-talk dictation. Hold **Right ⌘**, speak, release — the text is pasted at
-the cursor. Runs entirely on this machine.
+Hands-free dictation. **Double-tap fn**, speak, **tap fn** — the text is pasted
+at the cursor. Nothing is held down. Runs entirely on this machine.
 
     mic -> flowrec (16 kHz mono WAV) -> whisper-server (warm) -> paste
 
@@ -46,9 +46,13 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
 
 ## Behaviour
 
+- **Double-tap fn** starts recording; **a single tap** stops it and transcribes.
+- **Esc** cancels a take without transcribing.
+- A **lone fn tap does nothing** — it takes two, inside `doubleTapGap`.
+- **fn held as a modifier is never a tap**, so fn+Space, fn+arrows and the
+  F-key row all behave normally. The existing fn+Space quick-capture binding is
+  untouched.
 - **Takes under 0.4 s are discarded** as accidental taps.
-- **Any other keypress while Right ⌘ is held cancels the take**, so Right ⌘
-  still works normally as a modifier for shortcuts.
 - The HUD only appears once the mic is genuinely delivering samples, so it is
   real feedback rather than an optimistic guess.
 - Whisper's stock near-silence outputs ("Thank you.", "[BLANK_AUDIO]", …) are
@@ -57,7 +61,16 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
 
 ## Config
 
-Top of `hammerspoon/flow.lua`. `key = 54` is Right ⌘; `61` is Right ⌥.
+Top of `hammerspoon/flow.lua`:
+
+- `key = 63` — fn. `54` is Right ⌘, `61` is Right ⌥.
+- `tapSeconds = 0.35` — fn held longer counts as a modifier, not a tap.
+- `doubleTapGap = 0.45` — raise it if double-tap feels too strict.
+
+This relies on the fn key doing nothing system-wide
+(`defaults read com.apple.HIToolbox AppleFnUsageType` -> `0`). If it is set to
+show the emoji picker or start Apple's dictation, change it in
+System Settings -> Keyboard -> "Press fn key to".
 
 To save ~1.6 GB of RAM by reusing voicemode's whisper instead of flow's own:
 

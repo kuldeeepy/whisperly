@@ -1,11 +1,12 @@
 -- Flow — push-to-talk dictation.
 --
---   hold Right ⌘ · speak · release  ->  text is pasted at the cursor
+--   double-tap fn · speak · tap fn  ->  text is pasted at the cursor
 --
 --   mic -> flowrec (16 kHz mono WAV) -> whisper-server (warm) -> paste
 --
--- Any other keypress while the key is held cancels the take, so Right ⌘ still
--- works as a normal modifier for shortcuts.
+-- Hands-free: nothing is held down. Esc cancels a take in progress.
+-- fn held as a modifier (fn+Space, fn+arrows, fn+F-keys) is never a tap, so
+-- the existing fn+Space quick-capture binding keeps working.
 
 local flow = {}
 
@@ -16,7 +17,9 @@ local config = {
   transcriber = ROOT .. "/bin/flow-stt",
   scratch = "/tmp/flow",
 
-  key = 54,            -- Right ⌘ (see hs.keycodes.map); 61 = Right ⌥
+  key = 63,            -- fn (see hs.keycodes.map)
+  tapSeconds = 0.35,   -- fn held longer than this is a modifier, not a tap
+  doubleTapGap = 0.45, -- two taps inside this window arm recording
   minSeconds = 0.4,    -- shorter takes are treated as an accidental tap
   maxSeconds = 120,    -- hard stop, so a stuck key cannot record forever
   trailingSpace = true,
@@ -212,9 +215,9 @@ local function startRecording()
     return
   end
 
-  -- Any other keypress means Right ⌘ is being used as a modifier, not to talk.
-  guardTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function()
-    stopRecording(true)
+  -- Recording is hands-free, so only Esc aborts it; everything else passes through.
+  guardTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
+    if event:getKeyCode() == hs.keycodes.map.escape then stopRecording(true) end
     return false
   end)
   guardTap:start()
@@ -223,16 +226,49 @@ local function startRecording()
 end
 
 -- Trigger -------------------------------------------------------------------
--- flagsChanged fires on both press and release of the same keycode; the cmd
--- flag tells the two apart.
+-- fn emits flagsChanged on both press and release; the fn flag separates them.
+-- A "tap" is a press and release, under tapSeconds, with no other key in
+-- between -- that last part is what keeps fn+Space and friends intact.
+
+local pressedAt = nil     -- when fn went down, or nil if fn is up
+local heldAsModifier = false
+local lastTapAt = 0
+local modifierWatch = nil
+
+local function onTap()
+  if state == "recording" then
+    stopRecording(false)
+    lastTapAt = 0
+    return
+  end
+  if state ~= "idle" then return end
+
+  local now = hs.timer.secondsSinceEpoch()
+  if now - lastTapAt <= config.doubleTapGap then
+    lastTapAt = 0
+    startRecording()
+  else
+    lastTapAt = now
+  end
+end
 
 local trigger = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(event)
   if event:getKeyCode() ~= config.key then return false end
 
-  if event:getFlags().cmd then
-    if state == "idle" then startRecording() end
-  else
-    stopRecording(false)
+  if event:getFlags().fn then                       -- fn down
+    pressedAt = hs.timer.secondsSinceEpoch()
+    heldAsModifier = false
+    -- Watch for a chord only while fn is actually held: no always-on key tap.
+    modifierWatch = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function()
+      heldAsModifier = true
+      return false
+    end)
+    modifierWatch:start()
+  else                                              -- fn up
+    if modifierWatch then modifierWatch:stop() modifierWatch = nil end
+    local held = pressedAt and (hs.timer.secondsSinceEpoch() - pressedAt) or math.huge
+    pressedAt = nil
+    if not heldAsModifier and held <= config.tapSeconds then onTap() end
   end
   return false
 end)
