@@ -1,12 +1,14 @@
 -- Flow — push-to-talk dictation.
 --
---   double-tap fn · speak · tap fn  ->  text is pasted at the cursor
+--   hold fn · speak · release        -> text is pasted at the cursor
+--   double-tap fn · speak · tap fn   -> same, but hands-free
 --
 --   mic -> flowrec (16 kHz mono WAV) -> whisper-server (warm) -> paste
 --
--- Hands-free: nothing is held down. Esc cancels a take in progress.
--- fn held as a modifier (fn+Space, fn+arrows, fn+F-keys) is never a tap, so
--- the existing fn+Space quick-capture binding keeps working.
+-- One threshold separates the two: release before `tapSeconds` and it was a
+-- tap, still down at `tapSeconds` and hold-to-talk begins. Esc cancels.
+-- Pressing any other key while fn is down cancels the take and marks it a
+-- chord, so fn+Space, fn+arrows and the F-key row keep working.
 
 local flow = {}
 
@@ -18,8 +20,13 @@ local config = {
   scratch = "/tmp/flow",
 
   key = 63,            -- fn (see hs.keycodes.map)
-  tapSeconds = 0.35,   -- fn held longer than this is a modifier, not a tap
-  doubleTapGap = 0.45, -- two taps inside this window arm recording
+  tapSeconds = 0.4,    -- release before this = tap; still down = hold-to-talk
+  doubleTapGap = 0.6,  -- two taps inside this window arm recording
+  debug = false,       -- log every fn press duration and inter-tap gap
+
+  -- The fn/globe key reports 63 in flagsChanged but emits its own keyDown as
+  -- 179. Neither is a chord partner, so neither may disqualify a tap.
+  selfKeys = { [63] = true, [179] = true },
   minSeconds = 0.4,    -- shorter takes are treated as an accidental tap
   maxSeconds = 120,    -- hard stop, so a stuck key cannot record forever
   trailingSpace = true,
@@ -36,6 +43,7 @@ local config = {
 -- idle -> recording -> transcribing -> idle
 
 local state = "idle"
+local mode = nil         -- "hold" (fn is down) or "toggle" (double-tapped)
 local recorder = nil     -- hs.task while recording
 local wavPath = nil
 local startedAt = nil
@@ -168,7 +176,8 @@ local function stopRecording(discard)
   if recorder then recorder:terminate() end   -- SIGTERM; flowrec flushes the header
 end
 
-local function startRecording()
+local function startRecording(recordMode)
+  mode = recordMode or "toggle"
   hs.fs.mkdir(config.scratch)
   wavPath = string.format("%s/%d.wav", config.scratch, hs.timer.absoluteTime())
   startedAt = hs.timer.secondsSinceEpoch()
@@ -227,14 +236,15 @@ end
 
 -- Trigger -------------------------------------------------------------------
 -- fn emits flagsChanged on both press and release; the fn flag separates them.
--- A "tap" is a press and release, under tapSeconds, with no other key in
--- between -- that last part is what keeps fn+Space and friends intact.
 
 local pressedAt = nil     -- when fn went down, or nil if fn is up
 local heldAsModifier = false
 local lastTapAt = 0
 local modifierWatch = nil
+local holdTimer = nil
 
+-- A tap either stops a toggle-mode take, or pairs with the previous tap to
+-- start one. A lone tap is deliberately inert.
 local function onTap()
   if state == "recording" then
     stopRecording(false)
@@ -246,30 +256,65 @@ local function onTap()
   local now = hs.timer.secondsSinceEpoch()
   if now - lastTapAt <= config.doubleTapGap then
     lastTapAt = 0
-    startRecording()
+    startRecording("toggle")
   else
     lastTapAt = now
   end
 end
 
+local function cancelHoldTimer()
+  if holdTimer then holdTimer:stop() holdTimer = nil end
+end
+
+local function onFnDown()
+  pressedAt = hs.timer.secondsSinceEpoch()
+  heldAsModifier = false
+
+  -- Watched only while fn is physically down, so there is no always-on key tap.
+  modifierWatch = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
+    if config.selfKeys[e:getKeyCode()] then return false end
+    if config.debug then print("[flow] chordkey=" .. tostring(e:getKeyCode())) end
+    heldAsModifier = true
+    cancelHoldTimer()
+    -- fn turned out to be a chord: drop anything hold-to-talk already started.
+    if state == "recording" and mode == "hold" then stopRecording(true) end
+    return false
+  end)
+  modifierWatch:start()
+
+  -- Still down at tapSeconds and not part of a chord: this is hold-to-talk.
+  holdTimer = hs.timer.doAfter(config.tapSeconds, function()
+    holdTimer = nil
+    if state == "idle" and not heldAsModifier then
+      lastTapAt = 0
+      startRecording("hold")
+    end
+  end)
+end
+
+local function onFnUp()
+  cancelHoldTimer()
+  if modifierWatch then modifierWatch:stop() modifierWatch = nil end
+
+  local held = pressedAt and (hs.timer.secondsSinceEpoch() - pressedAt) or math.huge
+  pressedAt = nil
+
+  if config.debug then
+    print(string.format("[flow] fn held=%.2fs gap=%.2fs chord=%s state=%s",
+      held, lastTapAt > 0 and (hs.timer.secondsSinceEpoch() - lastTapAt) or -1,
+      tostring(heldAsModifier), state))
+  end
+
+  if state == "recording" and mode == "hold" then
+    stopRecording(false)                       -- released: transcribe
+  elseif not heldAsModifier and held <= config.tapSeconds then
+    onTap()
+  end
+end
+
 local trigger = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(event)
   if event:getKeyCode() ~= config.key then return false end
-
-  if event:getFlags().fn then                       -- fn down
-    pressedAt = hs.timer.secondsSinceEpoch()
-    heldAsModifier = false
-    -- Watch for a chord only while fn is actually held: no always-on key tap.
-    modifierWatch = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function()
-      heldAsModifier = true
-      return false
-    end)
-    modifierWatch:start()
-  else                                              -- fn up
-    if modifierWatch then modifierWatch:stop() modifierWatch = nil end
-    local held = pressedAt and (hs.timer.secondsSinceEpoch() - pressedAt) or math.huge
-    pressedAt = nil
-    if not heldAsModifier and held <= config.tapSeconds then onTap() end
-  end
+  if event:getFlags().fn then onFnDown() else onFnUp() end
   return false
 end)
 

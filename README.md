@@ -1,7 +1,11 @@
 # flow
 
-Hands-free dictation. **Double-tap fn**, speak, **tap fn** — the text is pasted
-at the cursor. Nothing is held down. Runs entirely on this machine.
+Local dictation, two ways:
+
+- **Hold fn**, speak, **release** — for a quick line.
+- **Double-tap fn**, speak, **tap fn** — hands-free, for anything longer.
+
+Text is pasted at the cursor. Runs entirely on this machine.
 
     mic -> flowrec (16 kHz mono WAV) -> whisper-server (warm) -> paste
 
@@ -46,12 +50,16 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
 
 ## Behaviour
 
-- **Double-tap fn** starts recording; **a single tap** stops it and transcribes.
+- **Hold fn past `tapSeconds`** and recording starts; releasing transcribes.
+- **Double-tap fn** starts a hands-free take; **a single tap** ends it.
 - **Esc** cancels a take without transcribing.
 - A **lone fn tap does nothing** — it takes two, inside `doubleTapGap`.
 - **fn held as a modifier is never a tap**, so fn+Space, fn+arrows and the
   F-key row all behave normally. The existing fn+Space quick-capture binding is
-  untouched.
+  untouched. If a chord starts mid-hold, the take is dropped.
+- The fn/globe key reports **63** in `flagsChanged` but emits its own keyDown as
+  **179**. Both are in `config.selfKeys` and neither counts as a chord partner —
+  without that, every tap looks like a chord and double-tap never fires.
 - **Takes under 0.4 s are discarded** as accidental taps.
 - The HUD only appears once the mic is genuinely delivering samples, so it is
   real feedback rather than an optimistic guess.
@@ -64,8 +72,12 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
 Top of `hammerspoon/flow.lua`:
 
 - `key = 63` — fn. `54` is Right ⌘, `61` is Right ⌥.
-- `tapSeconds = 0.35` — fn held longer counts as a modifier, not a tap.
-- `doubleTapGap = 0.45` — raise it if double-tap feels too strict.
+- `tapSeconds = 0.4` — release sooner and it is a tap; hold longer and
+  recording starts. Measured taps here run 0.09-0.13s, so there is plenty
+  of headroom.
+- `doubleTapGap = 0.6` — raise it if double-tap feels too strict.
+- `debug = true` — logs every fn press duration, gap and chord key. This is
+  what to reach for when a trigger misbehaves.
 
 This relies on the fn key doing nothing system-wide
 (`defaults read com.apple.HIToolbox AppleFnUsageType` -> `0`). If it is set to
