@@ -130,6 +130,9 @@ end
 -- that killed the recorder before its cleanup ran -- nothing is recording yet,
 -- so sweep the lot. 0700 keeps takes unreadable by other accounts.
 local function prepareScratch()
+  -- A recorder orphaned by a reload keeps the mic open; flowrec now exits on
+  -- its own when reparented, but clear any predating this build.
+  os.execute(string.format("pkill -f %q 2>/dev/null", config.recorder))
   hs.fs.mkdir(config.scratch)
   -- hs.fs has no chmod; one shell call at load is cheaper than the alternatives.
   os.execute(string.format("chmod 700 %q 2>/dev/null", config.scratch))
@@ -282,21 +285,22 @@ local function cancelHoldTimer()
   if holdTimer then holdTimer:stop() holdTimer = nil end
 end
 
+-- Built once and merely started/stopped. Creating a CGEventTap on every fn
+-- press would mean building one for every fn+arrow and F-key you touch.
+modifierWatch = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
+  if config.selfKeys[e:getKeyCode()] then return false end
+  if config.debug then print("[flow] chordkey=" .. tostring(e:getKeyCode())) end
+  heldAsModifier = true
+  cancelHoldTimer()
+  -- fn turned out to be a chord: drop anything hold-to-talk already started.
+  if state == "recording" and mode == "hold" then stopRecording(true) end
+  return false
+end)
+
 local function onFnDown()
   pressedAt = hs.timer.secondsSinceEpoch()
   heldAsModifier = false
-
-  -- Watched only while fn is physically down, so there is no always-on key tap.
-  modifierWatch = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
-    if config.selfKeys[e:getKeyCode()] then return false end
-    if config.debug then print("[flow] chordkey=" .. tostring(e:getKeyCode())) end
-    heldAsModifier = true
-    cancelHoldTimer()
-    -- fn turned out to be a chord: drop anything hold-to-talk already started.
-    if state == "recording" and mode == "hold" then stopRecording(true) end
-    return false
-  end)
-  modifierWatch:start()
+  modifierWatch:start()   -- runs only while fn is physically down
 
   -- Still down at tapSeconds and not part of a chord: this is hold-to-talk.
   holdTimer = hs.timer.doAfter(config.tapSeconds, function()
@@ -310,7 +314,7 @@ end
 
 local function onFnUp()
   cancelHoldTimer()
-  if modifierWatch then modifierWatch:stop() modifierWatch = nil end
+  modifierWatch:stop()
 
   local held = pressedAt and (hs.timer.secondsSinceEpoch() - pressedAt) or math.huge
   pressedAt = nil

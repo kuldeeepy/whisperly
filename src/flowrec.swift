@@ -18,6 +18,8 @@ import Foundation
 
 let sampleRate = 16000.0
 let meterInterval = 0.066
+let maxSeconds = 600.0        // hard cap, independent of any caller
+let watchdogInterval = 2.0
 
 func die(_ message: String) -> Never {
     FileHandle.standardError.write(Data("flowrec: \(message)\n".utf8))
@@ -114,6 +116,16 @@ let stop = {
     FileHandle.standardError.write(Data(String(format: "%.3f\n", seconds).utf8))
     exit(0)
 }
+
+// Nothing above guarantees a caller ever sends SIGTERM: if Hammerspoon
+// reloads or crashes mid-take, this process is reparented to launchd and would
+// otherwise hold the microphone open forever, growing the file at 32 KB/s.
+let watchdog = DispatchSource.makeTimerSource(queue: .main)
+watchdog.schedule(deadline: .now() + watchdogInterval, repeating: watchdogInterval)
+watchdog.setEventHandler {
+    if getppid() == 1 || Double(framesWritten) / sampleRate >= maxSeconds { stop() }
+}
+watchdog.resume()
 
 let sources = [SIGTERM, SIGINT].map { sig -> DispatchSourceSignal in
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
