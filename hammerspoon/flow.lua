@@ -125,6 +125,23 @@ end
 
 -- Pipeline ------------------------------------------------------------------
 
+-- Recordings are transient: each is deleted the moment it has been
+-- transcribed. Any WAV still present at load was orphaned by a reload or crash
+-- that killed the recorder before its cleanup ran -- nothing is recording yet,
+-- so sweep the lot. 0700 keeps takes unreadable by other accounts.
+local function prepareScratch()
+  hs.fs.mkdir(config.scratch)
+  -- hs.fs has no chmod; one shell call at load is cheaper than the alternatives.
+  os.execute(string.format("chmod 700 %q 2>/dev/null", config.scratch))
+  -- hs.fs.dir returns an iterator *and* a state object; the generic for needs
+  -- both, so pcall the whole loop rather than capturing the first return.
+  pcall(function()
+    for entry in hs.fs.dir(config.scratch) do
+      if entry:match("%.wav$") then os.remove(config.scratch .. "/" .. entry) end
+    end
+  end)
+end
+
 local function reset()
   if guardTap then guardTap:stop() guardTap = nil end
   if maxTimer then maxTimer:stop() maxTimer = nil end
@@ -178,7 +195,6 @@ end
 
 local function startRecording(recordMode)
   mode = recordMode or "toggle"
-  hs.fs.mkdir(config.scratch)
   wavPath = string.format("%s/%d.wav", config.scratch, hs.timer.absoluteTime())
   startedAt = hs.timer.secondsSinceEpoch()
   state = "recording"
@@ -318,6 +334,7 @@ local trigger = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
   return false
 end)
 
+prepareScratch()
 trigger:start()
 
 flow.config = config

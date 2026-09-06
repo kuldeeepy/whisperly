@@ -67,6 +67,21 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
   filtered in `config.hallucinations`.
 - The clipboard is saved before pasting and restored 150 ms later.
 
+## What is kept
+
+Nothing. No transcript is ever written to disk — not by flow, and not by the
+whisper server, which logs only the filename, sample count and duration. The
+Hammerspoon console records a character count, never the text.
+
+Each recording lives in `/tmp/flow` (mode 0700) and is deleted as soon as it has
+been transcribed. Any WAV still there at load was orphaned by a reload or crash
+and is swept on startup.
+
+The one moment the text is exposed is the ~150 ms it sits on the pasteboard for
+the ⌘V. A clipboard manager would capture it in that window; none is running
+here. There is no history, so there is also no undo and no way to recover a
+take you have lost.
+
 ## Config
 
 Top of `hammerspoon/flow.lua`:
