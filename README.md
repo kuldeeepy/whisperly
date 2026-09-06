@@ -44,7 +44,8 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
 
     src/flowrec.swift      mic -> 16 kHz mono WAV; RMS on stdout for the meter
     bin/flow-stt           WAV -> transcript, via the whisper server
-    hammerspoon/flow.lua   hotkey, state machine, HUD, paste
+    hammerspoon/flow.lua   hotkey, state machine, paste
+    hammerspoon/flow_hud.lua  the pill: waveform, pulse, fades
     launchd/*.plist        the warm whisper server (port 2032)
     selftest.sh            end-to-end check without touching the keyboard
 
@@ -61,8 +62,34 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
   **179**. Both are in `config.selfKeys` and neither counts as a chord partner —
   without that, every tap looks like a chord and double-tap never fires.
 - **Takes under 0.4 s are discarded** as accidental taps.
-- The HUD only appears once the mic is genuinely delivering samples, so it is
+- The pill only appears once the mic is genuinely delivering samples, so it is
   real feedback rather than an optimistic guess.
+
+## The pill
+
+Bottom-centre, 120x32, 22 pt off the bottom edge. A scrolling waveform while
+listening, newest sample on the right; a soft travelling pulse in blue while
+transcribing; 0.12s fade in, 0.18s out.
+
+Cost is bounded by construction. While listening there is **no timer at all** --
+the waveform is driven by the RMS lines flowrec already prints, which the
+pipeline pays for regardless. The only timer runs during transcription, at
+25 fps for the ~0.7s it lasts, and is stopped the instant it ends. At rest the
+canvas is hidden and nothing is scheduled.
+
+Measured on this machine, Hammerspoon CPU over a 6 s window:
+
+| | |
+|---|---|
+| idle | 0.13 s |
+| pill live at 15 Hz | 0.41 s (~0.28 s net, ~5% of one core) |
+| idle again afterwards | 0.13 s |
+
+Two things were tried and rejected on measurement. Drawing the waveform as one
+filled `segments` shape, on the theory that N element writes mean N redraws,
+measured *worse* -- 0.47 s net against 0.28 s -- because rebuilding a 32-point
+coordinate table each frame costs more across the Lua/ObjC bridge than 16 frame
+writes. And the canvas is built once and reused, never rebuilt on show.
 - Whisper's stock near-silence outputs ("Thank you.", "[BLANK_AUDIO]", …) are
   filtered in `config.hallucinations`.
 - The clipboard is saved before pasting and restored 150 ms later.

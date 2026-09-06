@@ -48,59 +48,19 @@ local recorder = nil     -- hs.task while recording
 local wavPath = nil
 local startedAt = nil
 local guardTap = nil     -- keyDown watcher, live only while recording
+local shown = false      -- has the pill appeared for this take?
 local maxTimer = nil
 
 -- HUD -----------------------------------------------------------------------
+-- Drawing lives in flow_hud.lua. Every call is wrapped: the pill is cosmetic
+-- and must never be able to take down the dictation path -- it did once, when
+-- an invalid font name threw before whisper was ever called.
 
-local hud = nil
+local ui = require("flow_hud")
 
-local function buildHud()
-  local screen = hs.screen.mainScreen():frame()
-  local w, h = 190, 40
-  local canvas = hs.canvas.new({
-    x = screen.x + (screen.w - w) / 2,
-    y = screen.y + screen.h - h - 90,
-    w = w, h = h,
-  })
-
-  canvas:appendElements(
-    { type = "rectangle", action = "fill", roundedRectRadii = { xRadius = 20, yRadius = 20 },
-      fillColor = { red = 0.08, green = 0.08, blue = 0.09, alpha = 0.92 } },
-    { type = "circle", action = "fill", center = { x = 24, y = 20 }, radius = 5,
-      fillColor = { red = 0.98, green = 0.32, blue = 0.32, alpha = 1 } },
-    { type = "text", text = "listening", textSize = 13,
-      textColor = { white = 0.95 }, textFont = hs.styledtext.defaultFonts.system.name,
-      frame = { x = 40, y = 11, w = 100, h = 20 } },
-    -- Level meter: width is driven by mic RMS.
-    { type = "rectangle", action = "fill", roundedRectRadii = { xRadius = 2, yRadius = 2 },
-      fillColor = { white = 0.6, alpha = 0.8 },
-      frame = { x = 140, y = 18, w = 0, h = 4 } }
-  )
-
-  canvas:level(hs.canvas.windowLevels.overlay)
-  canvas:behavior(hs.canvas.windowBehaviors.canJoinAllSpaces)
-  return canvas
-end
-
-local function showHud(label, dotColor)
-  local ok, err = pcall(function()
-    hud = hud or buildHud()
-    hud[2].fillColor = dotColor
-    hud[3].text = label
-    hud[4].frame.w = 0
-    hud:show()
-  end)
+local function hud(fn, ...)
+  local ok, err = pcall(fn, ...)
   if not ok then print("[flow] hud: " .. tostring(err)) end
-end
-
-local function hideHud()
-  if hud then hud:hide() end
-end
-
--- RMS is roughly 0.0-0.3 for speech; scale it into a 34 px bar.
-local function updateMeter(rms)
-  if not hud then return end
-  hud[4].frame.w = math.min(34, rms * 170)
 end
 
 -- Output --------------------------------------------------------------------
@@ -153,7 +113,7 @@ local function reset()
 end
 
 local function fail(message)
-  hideHud()
+  hud(ui.hide)
   hs.alert.show(message, 1.2)
   reset()
 end
@@ -166,10 +126,10 @@ local function wavSeconds(path)
 end
 
 local function transcribe(path)
-  showHud("transcribing", { red = 0.4, green = 0.7, blue = 1.0, alpha = 1 })
+  hud(ui.transcribing)
 
   hs.task.new(config.transcriber, function(code, stdout, stderr)
-    hideHud()
+    hud(ui.hide)
     if code ~= 0 then
       print("[flow] stt failed: " .. tostring(stderr))
       hs.alert.show("Flow: " .. (stderr or "transcription failed"), 2)
@@ -198,6 +158,7 @@ end
 
 local function startRecording(recordMode)
   mode = recordMode or "toggle"
+  shown = false
   wavPath = string.format("%s/%d.wav", config.scratch, hs.timer.absoluteTime())
   startedAt = hs.timer.secondsSinceEpoch()
   state = "recording"
@@ -207,7 +168,7 @@ local function startRecording(recordMode)
       local path, cancelled = wavPath, (state == "cancelling")
       if cancelled then
         print("[flow] cancelled")
-        hideHud()
+        hud(ui.hide)
         os.remove(path)
         reset()
         return
@@ -219,7 +180,7 @@ local function startRecording(recordMode)
       end
       if wavSeconds(path) < config.minSeconds then
         print(string.format("[flow] too short: %.2fs", wavSeconds(path)))
-        hideHud()
+        hud(ui.hide)
         os.remove(path)
         reset()
         return
@@ -228,12 +189,11 @@ local function startRecording(recordMode)
     end,
     function(_, stdout)                        -- one RMS line per ~66 ms
       if state ~= "recording" then return true end
-      -- The first line is proof the mic is actually live, not just requested.
-      if not hud or not hud:isShowing() then
-        showHud("listening", { red = 0.98, green = 0.32, blue = 0.32, alpha = 1 })
-      end
+      -- The first line is proof the mic is live, not merely requested, so the
+      -- pill only ever appears once audio is genuinely arriving.
+      if not shown then shown = true; hud(ui.listening) end
       local last = stdout:match("([%d%.]+)%s*$")
-      if last then updateMeter(tonumber(last) or 0) end
+      if last then hud(ui.level, tonumber(last) or 0) end
       return true
     end,
     { wavPath })

@@ -51,6 +51,7 @@ echo "  ready on http://127.0.0.1:$PORT"
 step "Wiring up Hammerspoon"
 mkdir -p "$HS_DIR"
 ln -sf "$ROOT/hammerspoon/flow.lua" "$HS_DIR/flow.lua"
+ln -sf "$ROOT/hammerspoon/flow_hud.lua" "$HS_DIR/flow_hud.lua"
 if ! grep -q 'require("flow")' "$HS_DIR/init.lua" 2>/dev/null; then
   printf '\n-- Flow: push-to-talk dictation (~/Others/flow)\nrequire("flow")\n' >> "$HS_DIR/init.lua"
   echo "  added require(\"flow\") to init.lua"
