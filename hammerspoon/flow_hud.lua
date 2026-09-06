@@ -14,23 +14,28 @@
 
 local hud = {}
 
-local BARS      = 16
+local BARS      = 18
 local BAR_W     = 2
-local BAR_GAP   = 3
+local BAR_GAP   = 2.6
 local W, H      = 120, 32
 local MARGIN    = 22      -- gap from the bottom of the screen
 local MAX_HALF  = 9       -- tallest half-bar, in points
 local MIN_HALF  = 1       -- a resting bar is a dot, never nothing
-local FULL_RMS  = 0.10    -- mic RMS that fills a bar
-local CURVE     = 0.55    -- <1 lifts quiet speech into visible range
-local SMOOTHING = 0.55    -- how much of a new sample survives, 0..1
+local CURVE     = 0.65    -- <1 lifts quiet speech into visible range
+local ATTACK    = 0.70    -- rise fast, so consonants read as hits
+local RELEASE   = 0.22    -- fall slowly, so the shape stays legible
+local NOISE     = 0.006   -- below this is room tone, not speech
+local MIN_PEAK  = 0.030   -- floor on the reference, so a whisper cannot
+                          -- be stretched to full height
+local PEAK_FALL = 0.995   -- per sample; the reference forgets over ~3s
 local PULSE_FPS = 25
 
 local LISTEN = { white = 0.96, alpha = 0.92 }
 local WORK   = { red = 0.45, green = 0.72, blue = 1.0, alpha = 0.95 }
 
 local canvas, screenFrame, pulseTimer
-local levels, lastLevel = {}, 0
+local levels, lastLevel, peak = {}, 0, MIN_PEAK
+local drawn = {}          -- last height written per bar, to skip no-op writes
 local mode, pulseAt = nil, 0
 
 -- Layout --------------------------------------------------------------------
@@ -88,12 +93,19 @@ local function position()
 end
 
 -- Bars are elements 3..N+2; 1 and 2 are the pill and its rim.
+--
+-- Each frame assignment crosses into ObjC and invalidates the canvas, so bars
+-- that have not visibly moved are left alone. During a pause that is every
+-- bar, which is a real share of any take.
 local function render(color)
   for i = 1, BARS do
     local half = halfAt(i)
-    local bar = canvas[i + 2]
-    bar.frame = { x = barX(i), y = H / 2 - half, w = BAR_W, h = half * 2 }
-    if color then bar.fillColor = color end
+    if color or math.abs(half - (drawn[i] or -1)) > 0.2 then
+      local bar = canvas[i + 2]
+      bar.frame = { x = barX(i), y = H / 2 - half, w = BAR_W, h = half * 2 }
+      if color then bar.fillColor = color end
+      drawn[i] = half
+    end
   end
 end
 
@@ -102,8 +114,9 @@ local function stopPulse()
 end
 
 local function clear()
-  for i = 1, BARS do levels[i] = 0 end
+  for i = 1, BARS do levels[i] = 0; drawn[i] = nil end
   lastLevel = 0
+  peak = MIN_PEAK
 end
 
 -- States --------------------------------------------------------------------
@@ -119,10 +132,22 @@ function hud.listening()
 end
 
 -- Called from flowrec's stdout, so the waveform costs no timer of its own.
+--
+-- The reference level adapts: a fixed full-scale constant is wrong for every
+-- voice, mic distance and room, and being wrong either pins the bars flat or
+-- saturates them. Tracking a decaying peak makes the waveform scale to
+-- whatever this speaker actually produces.
 function hud.level(rms)
   if mode ~= "listening" then return end
-  local target = math.min(1, (rms or 0) / FULL_RMS) ^ CURVE
-  lastLevel = lastLevel + (target - lastLevel) * SMOOTHING
+  rms = rms or 0
+
+  peak = math.max(rms, peak * PEAK_FALL, MIN_PEAK)
+  local span = peak - NOISE
+  local target = span > 0 and math.min(1, math.max(0, rms - NOISE) / span) ^ CURVE or 0
+
+  -- Fast attack, slow release: the asymmetry is what makes a meter look like
+  -- it is following speech rather than smearing it.
+  lastLevel = lastLevel + (target - lastLevel) * (target > lastLevel and ATTACK or RELEASE)
 
   table.remove(levels, 1)       -- scroll left, newest on the right
   levels[BARS] = lastLevel

@@ -187,13 +187,16 @@ local function startRecording(recordMode)
       end
       transcribe(path)
     end,
-    function(_, stdout)                        -- one RMS line per ~66 ms
+    function(_, stdout)                        -- RMS lines, ~30 per second
       if state ~= "recording" then return true end
       -- The first line is proof the mic is live, not merely requested, so the
       -- pill only ever appears once audio is genuinely arriving.
       if not shown then shown = true; hud(ui.listening) end
-      local last = stdout:match("([%d%.]+)%s*$")
-      if last then hud(ui.level, tonumber(last) or 0) end
+      -- A chunk often carries several samples. Taking only the last one threw
+      -- the rest away and made the waveform lag and stutter.
+      for value in stdout:gmatch("[%d%.]+") do
+        hud(ui.level, tonumber(value) or 0)
+      end
       return true
     end,
     { wavPath })

@@ -7,7 +7,7 @@
 // machine (measured: 0.41s lost of 3s, 1.50s lost of 12s), which corrupts
 // speech throughout the take rather than only at the edges.
 //
-// stdout carries one `<rms>` line per ~66 ms for the caller's level meter.
+// stdout carries one `<rms>` line per ~33 ms for the caller's level meter.
 // stderr carries the final duration in seconds.
 
 import AVFoundation
@@ -17,7 +17,7 @@ import Dispatch
 import Foundation
 
 let sampleRate = 16000.0
-let meterInterval = 0.066
+let meterInterval = 0.033
 let maxSeconds = 600.0        // hard cap, independent of any caller
 let watchdogInterval = 2.0
 

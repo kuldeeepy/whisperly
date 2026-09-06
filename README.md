@@ -67,8 +67,13 @@ then nothing. That measurement is why `src/flowrec.swift` exists.
 
 ## The pill
 
+The level scales to a decaying peak rather than a fixed full-scale constant: a
+constant is wrong for every voice, mic distance and room, and being wrong either
+pins the bars flat or saturates them. Attack is fast and release slow, which is
+what makes a meter look like it is following speech instead of smearing it.
+
 Bottom-centre, 120x32, 22 pt off the bottom edge. A scrolling waveform while
-listening, newest sample on the right; a soft travelling pulse in blue while
+listening at 30 samples/s, newest on the right; a soft travelling pulse while
 transcribing; 0.12s fade in, 0.18s out.
 
 Cost is bounded by construction. While listening there is **no timer at all** --
@@ -77,13 +82,18 @@ pipeline pays for regardless. The only timer runs during transcription, at
 25 fps for the ~0.7s it lasts, and is stopped the instant it ends. At rest the
 canvas is hidden and nothing is scheduled.
 
-Measured on this machine, Hammerspoon CPU over a 6 s window:
+Measured on this machine, Hammerspoon CPU:
 
-| | |
-|---|---|
-| idle | 0.13 s |
-| pill live at 15 Hz | 0.41 s (~0.28 s net, ~5% of one core) |
-| idle again afterwards | 0.13 s |
+| | CPU | of one core |
+|---|---|---|
+| true idle, nothing shown | 0.01 s / 10 s | 0.1% |
+| recording, static pill | 0.11 s / 11 s | 1.0% |
+| recording, waveform live | 0.60 s / 11 s | 5.5% |
+
+So the waveform costs ~4.5% of one core, only while you are actually speaking,
+and nothing at all at rest. Bars whose height has not visibly moved are not
+rewritten, which halved the cost of a take (1.15 s -> 0.58 s per 11 s) and makes
+pauses nearly free.
 
 Two things were tried and rejected on measurement. Drawing the waveform as one
 filled `segments` shape, on the theory that N element writes mean N redraws,
