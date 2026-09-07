@@ -40,7 +40,7 @@ clipboard is put back, and the recording is deleted.
 
 The one thing that matters: **whisper is kept running.** Starting it costs
 about a second, which is longer than transcribing usually takes. That is worth
-1.7 GB of memory and it is the reason this feels instant.
+1.6 GB of memory and it is the reason this feels instant.
 
 ## Speed
 
@@ -64,10 +64,10 @@ back in.
 
 | | |
 |---|---|
-| Memory | 1.7 GB, held so transcription stays fast |
+| Memory | 1.6 GB, held so transcription stays fast |
 | CPU, idle | 0.1% of one core |
 | CPU, while you speak | 5.5% of one core |
-| Disk | 336 KB for Whisperly, 2.7 GB for the whisper model |
+| Disk | 336 KB for Whisperly, 2.7 GB for the model files |
 | Money | nothing |
 
 ## Setting it up
