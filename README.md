@@ -5,7 +5,7 @@ Dictation for macOS that runs entirely on your own machine.
 Hold `fn`, talk, let go. The text appears wherever your cursor is, about half a
 second later. Nothing is uploaded, there is no account, and nothing to pay for.
 
-Built this because I was paying for Wispr Flow and my laptop was already
+Built because I was paying for Wispr Flow and my laptop was already
 sitting on a model that could do the same job.
 
 ```
