@@ -72,9 +72,6 @@ back in.
 
 ## Setting it up
 
-Written for someone who has never used Terminal. Copy each block, paste it,
-press Return, wait for it to finish, then move to the next one.
-
 **You need:** a Mac with Apple silicon (M1, M2, M3 or M4 — check  → About
 This Mac; if it says Intel, this will not work), about **5 GB of free disk
 space**, and roughly **20 minutes**, most of it waiting on downloads.
