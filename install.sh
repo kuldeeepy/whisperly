@@ -5,7 +5,15 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
-WHISPER_DIR=${WHISPERLY_WHISPER_DIR:-$HOME/.voicemode/services/whisper}
+# Look in the usual places, or set WHISPERLY_WHISPER_DIR yourself.
+find_whisper() {
+  for dir in "$HOME/whisper.cpp" "$HOME/src/whisper.cpp" \
+             "$HOME/.voicemode/services/whisper" "/opt/whisper.cpp"; do
+    [ -x "$dir/build/bin/whisper-server" ] && { echo "$dir"; return; }
+  done
+  echo "$HOME/whisper.cpp"   # so the error message names something sensible
+}
+WHISPER_DIR=${WHISPERLY_WHISPER_DIR:-$(find_whisper)}
 PORT=${WHISPERLY_PORT:-2032}
 SCRATCH=${WHISPERLY_SCRATCH:-/tmp/whisperly}
 LOG_DIR=$HOME/.local/state/whisperly
@@ -17,8 +25,8 @@ step() { printf '\033[1m==>\033[0m %s\n' "$1"; }
 
 step "Checking what we need"
 [ -x "$WHISPER_DIR/build/bin/whisper-server" ] || {
-  echo "  can't find $WHISPER_DIR/build/bin/whisper-server" >&2
-  echo "  build whisper.cpp first, or point WHISPERLY_WHISPER_DIR at your build" >&2
+  echo "  can't find a whisper.cpp build (looked in $WHISPER_DIR)" >&2
+  echo "  see 'Setting it up' in the README, or set WHISPERLY_WHISPER_DIR" >&2
   exit 1
 }
 [ -f "$WHISPER_DIR/models/ggml-large-v3-turbo.bin" ] || {
@@ -40,7 +48,15 @@ sed -e "s|__WHISPER_DIR__|$WHISPER_DIR|g" \
     -e "s|__PORT__|$PORT|g" \
     "$ROOT/launchd/$LABEL.plist" > "$AGENT"
 
+# bootout returns before the job is really gone, so wait for it or the
+# bootstrap below races it and fails with "Input/output error".
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+i=0
+while launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -lt 40 ] || { echo "  the old service would not stop" >&2; exit 1; }
+  sleep 0.25
+done
 launchctl bootstrap "gui/$(id -u)" "$AGENT"
 
 step "Waiting for the model to load"

@@ -67,36 +67,171 @@ back in.
 | Memory | 1.7 GB, held so transcription stays fast |
 | CPU, idle | 0.1% of one core |
 | CPU, while you speak | 5.5% of one core |
-| Disk | 336 KB, plus a model you likely already have |
+| Disk | 336 KB for Whisperly, 2.7 GB for the whisper model |
 | Money | nothing |
 
-## Installing
+## Setting it up
 
-You need macOS on Apple silicon, [Hammerspoon](https://www.hammerspoon.org),
-`jq`, and a [whisper.cpp](https://github.com/ggerganov/whisper.cpp) build with
-the `large-v3-turbo` model.
+Written for someone who has never used Terminal. Copy each block, paste it,
+press Return, wait for it to finish, then move to the next one.
+
+**You need:** a Mac with Apple silicon (M1, M2, M3 or M4 — check  → About
+This Mac; if it says Intel, this will not work), about **5 GB of free disk
+space**, and roughly **20 minutes**, most of it waiting on downloads.
+
+**Opening Terminal:** press `⌘ Space`, type `terminal`, press Return. A window
+with text appears. That is where everything below goes.
+
+When you paste a password, nothing appears on screen. That is normal, keep
+typing and press Return.
+
+### What you are installing, and why
+
+| | what it is |
+|---|---|
+| Xcode Command Line Tools | Apple's build tools. Whisperly is compiled on your machine |
+| Homebrew | installs the rest. Standard on Macs |
+| Hammerspoon | watches the `fn` key and pastes the text |
+| jq, cmake | small helpers |
+| whisper.cpp | the thing that actually turns speech into words |
+| the model | 2.7 GB of speech recognition, runs on your Mac |
+
+Nothing here needs an account, and nothing is uploaded.
+
+### 1. Apple's build tools
 
 ```sh
-git clone https://github.com/kuldeeepy/whisperly
-cd whisperly
+xcode-select --install
+```
+
+A window pops up. Click **Install** and wait. If it says they are already
+installed, good, move on.
+
+### 2. Homebrew
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+It asks for your Mac password. At the end it may print two lines starting with
+`echo` and ask you to run them — do exactly that if it does, then close
+Terminal and open it again.
+
+Already have Homebrew? Skip this.
+
+### 3. The helpers
+
+```sh
+brew install --cask hammerspoon
+brew install jq cmake
+```
+
+Now open Hammerspoon once (`⌘ Space`, type `hammerspoon`, Return) so it appears
+in your menu bar. It may warn that it was downloaded from the internet — click
+**Open**.
+
+### 4. The speech engine
+
+This is the part that does the real work. It gets built once and kept.
+
+```sh
+git clone https://github.com/ggerganov/whisper.cpp ~/whisper.cpp
+cd ~/whisper.cpp
+cmake -B build -DWHISPER_COREML=1
+cmake --build build -j --config Release
+```
+
+The last line takes a few minutes and prints a lot of text. That is fine.
+`-DWHISPER_COREML=1` is what lets it use your Mac's AI chip, which is most of
+the speed.
+
+### 5. The model
+
+Two downloads, about 2.7 GB together. Slow connection, go make tea.
+
+```sh
+sh ./models/download-ggml-model.sh large-v3-turbo
+sh ./models/download-coreml-model.sh large-v3-turbo
+```
+
+Both are needed. Check it works:
+
+```sh
+./build/bin/whisper-cli -m models/ggml-large-v3-turbo.bin -f samples/jfk.wav -nt
+```
+
+Among the output you should see *"And so, my fellow Americans..."*. If you do,
+the hard part is done. The first run is slow while your Mac prepares the model;
+it only happens once.
+
+### 6. Whisperly
+
+```sh
+git clone https://github.com/kuldeeepy/whisperly ~/whisperly
+cd ~/whisperly
 ./install.sh
 ```
 
-Then two things the installer cannot do for you:
-
-1. Hammerspoon menu bar icon → **Reload Config**
-2. System Settings → Privacy & Security → give Hammerspoon **Microphone** and
-   **Accessibility**
-
-That microphone permission is the one that bites. Without it you get silence
-and no error at all, because a helper started by Hammerspoon never raises its
-own prompt. `./selftest.sh` checks for exactly this and says so plainly.
-
-If your whisper build lives somewhere else:
+It finds your whisper build on its own. If it cannot, tell it where:
 
 ```sh
-WHISPERLY_WHISPER_DIR=/path/to/whisper.cpp ./install.sh
+WHISPERLY_WHISPER_DIR=~/whisper.cpp ./install.sh
 ```
+
+### 7. Permissions
+
+**This is the step people get wrong, and it fails silently.**
+
+Open **System Settings** → **Privacy & Security**, then:
+
+1. Click **Microphone**. Find **Hammerspoon** and switch it on.
+   Not listed? Click **+**, pick Hammerspoon from Applications.
+2. Go back, click **Accessibility**. Switch **Hammerspoon** on there too.
+
+Then click the Hammerspoon icon in your menu bar (top right, looks like a
+spoon) → **Reload Config**.
+
+Without the microphone permission you get silence and no error message at all,
+because a helper started by Hammerspoon never gets to ask you itself.
+
+### 8. Try it
+
+```sh
+cd ~/whisperly
+./selftest.sh
+```
+
+It plays a clip through your speakers, records it, and transcribes it. If the
+last line says **PASS**, everything works. If a permission is missing, it says
+so in plain words.
+
+Now click into any text box — Notes, Messages, a browser — **hold `fn`, say
+something, and let go**. A small dark pill appears at the bottom of your
+screen while it listens.
+
+Wait for the pill before you speak, or you will clip your first word.
+
+### If something is wrong
+
+| what happens | what to do |
+|---|---|
+| Nothing at all when you hold `fn` | Reload Hammerspoon from the menu bar |
+| Pill appears but no text | Microphone permission. Run `./selftest.sh` |
+| Text goes nowhere | Accessibility permission |
+| It says `no whisper server` | Run `./install.sh` again |
+| Double-tap ignored, holding works | System Settings → Keyboard → "Press fn key to" → set to **Do Nothing** |
+| `command not found: brew` | Close Terminal, open it again |
+
+### Removing it
+
+```sh
+cd ~/whisperly
+./uninstall.sh
+```
+
+Then open `~/.hammerspoon/init.lua` and delete the line
+`require("whisperly")`. To reclaim the disk space, delete the `~/whisper.cpp`
+and `~/whisperly` folders.
 
 ## Behaviour
 
