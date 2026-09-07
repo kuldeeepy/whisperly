@@ -2,12 +2,11 @@
 
 Dictation for macOS that runs entirely on your own machine.
 
-Hold `fn`, talk, let go. The text appears wherever your cursor is, about
-0.6 seconds later. Nothing is uploaded, there is no account, and there is
-nothing to pay for.
+Hold `fn`, talk, let go. The text appears wherever your cursor is, about half a
+second later. Nothing is uploaded, there is no account, and nothing to pay for.
 
 I built this because I was paying for Wispr Flow and my laptop was already
-sitting on a whisper model that could do the same job.
+sitting on a model that could do the same job.
 
 ```
 hold fn, speak, let go           text lands at your cursor
@@ -15,62 +14,7 @@ double-tap fn, speak, tap fn     same thing, hands free
 Esc                              throw the take away
 ```
 
-## How it works
-
-Four small pieces, each doing one thing:
-
-```
-  fn key
-    │
-    ▼
-  whisperly.lua ── watches the key, runs everything, pastes the result
-    │
-    ├──▶ recorder ────────▶ /tmp/whisperly/123.wav
-    │      (Swift, 16 kHz mono, also reports how loud you are)
-    │                                    │
-    │                                    ▼
-    │                          whisperly_hud.lua draws the waveform
-    │
-    └──▶ transcribe ──▶ whisper-server ──▶ "hello how are you"
-           (curl)        (large-v3-turbo, kept running)
-```
-
-Then the text goes on the clipboard, `⌘V` is pressed for you, your old
-clipboard is put back, and the recording is deleted.
-
-The one thing that matters: **whisper is kept running.** Starting it costs
-about a second, which is longer than transcribing usually takes. That is worth
-1.6 GB of memory and it is the reason this feels instant.
-
-## Speed
-
-Measured on an M4 MacBook Air:
-
-| you spoke for | transcription |
-|---|---|
-| 2s | 0.55s |
-| 5s | 0.56s |
-| 11s | 0.63s |
-
-Nearly flat, because whisper always pads its input to a 30-second window. The
-practical upshot: **say the whole thought in one go.** Five short takes cost
-five times as much as one long one.
-
-Full path from letting go of the key to seeing text is about **0.6s**. The
-first take after a long idle is slower, around 1.4s, while the model is paged
-back in.
-
-## What it costs to run
-
-| | |
-|---|---|
-| Memory | 1.6 GB, held so transcription stays fast |
-| CPU, idle | 0.1% of one core |
-| CPU, while you speak | 5.5% of one core |
-| Disk | 336 KB for Whisperly, 2.7 GB for the model files |
-| Money | nothing |
-
-## Setting it up
+## Setup
 
 **You need:** a Mac with Apple silicon (M1, M2, M3 or M4 — check  → About
 This Mac; if it says Intel, this will not work), about **5 GB of free disk
@@ -146,18 +90,15 @@ the speed.
 
 Two downloads, about 2.7 GB together. Slow connection, go make tea.
 
-The first is the model itself. The second is its encoder again, rebuilt to run
-on your Mac's Neural Engine — the same half of the model, in a form the AI chip
-can execute. Measured here it takes the encoder from 1,117ms to 730ms, about
-35% faster, which is roughly 0.4s off every sentence you dictate.
+The first is the model. The second is half of it again, rebuilt to run on your
+Mac's AI chip — that is what makes it fast.
 
 ```sh
 sh ./models/download-ggml-model.sh large-v3-turbo
 sh ./models/download-coreml-model.sh large-v3-turbo
 ```
 
-Skipping the second one still works — it quietly falls back to the GPU — but
-everything gets noticeably slower. Check it works:
+Skip the second and it still works, just slower. Check it works:
 
 ```sh
 ./build/bin/whisper-cli -m models/ggml-large-v3-turbo.bin -f samples/jfk.wav -nt
@@ -209,10 +150,10 @@ last line says **PASS**, everything works. If a permission is missing, it says
 so in plain words.
 
 Now click into any text box — Notes, Messages, a browser — **hold `fn`, say
-something, and let go**. A small dark pill appears at the bottom of your
-screen while it listens.
+something, and let go**.
 
-Wait for the pill before you speak, or you will clip your first word.
+A small dark pill appears at the bottom of the screen. Wait for it before you
+speak, or you will clip your first word.
 
 ### If something is wrong
 
@@ -236,43 +177,14 @@ Then open `~/.hammerspoon/init.lua` and delete the line
 `require("whisperly")`. To reclaim the disk space, delete the `~/whisper.cpp`
 and `~/whisperly` folders.
 
-## Behaviour
+## Using it
 
-- Takes under 0.4s are ignored, so a stray key press does nothing.
-- A single `fn` tap does nothing. It takes two, close together.
-- Holding `fn` as part of a shortcut never starts a take, so `fn`+Space,
-  `fn`+arrows and the F-key row all still work.
-- The pill only appears once the mic is really sending audio, so it is honest
-  feedback rather than a guess. Wait for it before you speak.
-- Whisper's usual inventions on silence ("Thank you.", "[BLANK_AUDIO]") are
-  filtered out.
-- A take stops on its own after two minutes.
-
-## What is kept
-
-Nothing. No transcript is written to disk, not by Whisperly and not by the
-whisper server, which logs only file names and durations. The Hammerspoon
-console shows a character count, never your words.
-
-Recordings live in `/tmp/whisperly` (mode 0700) and are deleted the moment they
-are transcribed. Anything left there by a crash is cleared at startup.
-
-The one exposure is the ~150ms your text spends on the clipboard during the
-paste. A clipboard manager would catch it in that window. There is no history,
-so there is also no undo.
-
-## Layout
-
-```
-src/recorder.swift          the recorder, source
-bin/recorder                the recorder, built (not checked in)
-bin/transcribe              sends a wav to whisper, prints the text
-hammerspoon/whisperly.lua      key handling, state, pasting
-hammerspoon/whisperly_hud.lua  the pill
-launchd/                    keeps whisper running across reboots
-install.sh / uninstall.sh
-selftest.sh                 checks the whole chain, no keyboard needed
-```
+- Hold `fn` for a quick line. Double-tap it for a long one, tap again to stop.
+- `Esc` throws a take away.
+- A single tap does nothing. It takes two, close together.
+- Using `fn` in a shortcut never starts a recording, so `fn`+Space, `fn`+arrows
+  and the F-keys all still work.
+- A recording stops on its own after two minutes.
 
 ## Settings
 
@@ -291,6 +203,69 @@ This assumes `fn` does nothing on its own
 (`defaults read com.apple.HIToolbox AppleFnUsageType` → `0`). If yours opens
 the emoji picker or Apple's dictation, change it under System Settings →
 Keyboard → "Press fn key to".
+
+## How it works
+
+```
+  you hold fn
+      │
+      ▼
+  a recorder writes what you say to a temporary file
+      │
+      ▼
+  whisper turns that file into text          ← the slow bit, ~0.6s
+      │
+      ▼
+  the text is pasted where your cursor is
+```
+
+The file is deleted straight after. Your clipboard is borrowed for the paste
+and given back.
+
+**Whisper is kept running in the background.** Starting it up takes about a
+second, which is longer than transcribing usually takes, so it stays loaded.
+That costs 1.6 GB of memory and it is the reason this feels instant.
+
+Speaking for longer barely costs more, because whisper works in fixed chunks:
+
+| you spoke for | it took |
+|---|---|
+| 2 seconds | 0.55s |
+| 5 seconds | 0.56s |
+| 11 seconds | 0.63s |
+
+So say the whole thought in one go. Five short takes cost five times as much
+as one long one.
+
+On an M4 MacBook Air it uses 1.6 GB of memory, and almost no CPU except while
+you are actually speaking. The first take after a long gap takes about 1.4s
+while whisper wakes up.
+
+## What it keeps
+
+Nothing. Your words are never written to a file or a log, by Whisperly or by
+whisper itself.
+
+Recordings are kept in a private folder only your account can read, and deleted
+the moment they are transcribed. Anything left behind by a crash is cleared the
+next time it starts.
+
+The one exposure: your text sits on the clipboard for about a sixth of a second
+while it is pasted, so a clipboard manager could catch it. Nothing is stored,
+which also means there is no undo.
+
+## Layout
+
+```
+src/recorder.swift          the recorder, source
+bin/recorder                the recorder, built (not checked in)
+bin/transcribe              sends a wav to whisper, prints the text
+hammerspoon/whisperly.lua      key handling, state, pasting
+hammerspoon/whisperly_hud.lua  the pill
+launchd/                    keeps whisper running across reboots
+install.sh / uninstall.sh
+selftest.sh                 checks the whole chain, no keyboard needed
+```
 
 ## Notes from building it
 
