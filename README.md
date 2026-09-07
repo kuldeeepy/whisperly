@@ -1,155 +1,190 @@
-# flow
+# Whisperly
 
-Local dictation, two ways:
+Dictation for macOS that runs entirely on your own machine.
 
-- **Hold fn**, speak, **release** — for a quick line.
-- **Double-tap fn**, speak, **tap fn** — hands-free, for anything longer.
+Hold `fn`, talk, let go. The text appears wherever your cursor is, about
+0.6 seconds later. Nothing is uploaded, there is no account, and there is
+nothing to pay for.
 
-Text is pasted at the cursor. Runs entirely on this machine.
+I built this because I was paying for Wispr Flow and my laptop was already
+sitting on a whisper model that could do the same job.
 
-    mic -> flowrec (16 kHz mono WAV) -> whisper-server (warm) -> paste
+```
+hold fn, speak, let go           text lands at your cursor
+double-tap fn, speak, tap fn     same thing, hands free
+Esc                              throw the take away
+```
 
-## Install
+## How it works
 
-    ./install.sh
+Four small pieces, each doing one thing:
 
-Then, both manual and required:
+```
+  fn key
+    │
+    ▼
+  whisperly.lua ── watches the key, runs everything, pastes the result
+    │
+    ├──▶ recorder ────────▶ /tmp/whisperly/123.wav
+    │      (Swift, 16 kHz mono, also reports how loud you are)
+    │                                    │
+    │                                    ▼
+    │                          whisperly_hud.lua draws the waveform
+    │
+    └──▶ transcribe ──▶ whisper-server ──▶ "hello how are you"
+           (curl)        (large-v3-turbo, kept running)
+```
 
-1. Hammerspoon menu bar icon -> **Reload Config**
-2. System Settings -> Privacy & Security:
-   - **Microphone** -> add/enable **Hammerspoon**
-   - **Accessibility** -> add/enable **Hammerspoon**
+Then the text goes on the clipboard, `⌘V` is pressed for you, your old
+clipboard is put back, and the recording is deleted.
 
-The microphone grant is the one that bites: a CLI child of Hammerspoon does not
-raise its own prompt, so if the toggle is off the recorder silently produces a
-0-frame file and nothing is pasted. `./selftest.sh` reports exactly this case.
+The one thing that matters: **whisper is kept running.** Starting it costs
+about a second, which is longer than transcribing usually takes. That is worth
+1.7 GB of memory and it is the reason this feels instant.
 
-## Measured on this machine (M4 Air, 16 GB)
+## Speed
 
-| stage | cost |
+Measured on an M4 MacBook Air:
+
+| you spoke for | transcription |
 |---|---|
-| recorder startup (audio lost at head) | ~0.11 s |
-| whisper `large-v3-turbo`, 11 s of audio, warm | **0.65 s** |
-| whisper cold (model load + Core ML compile) | +1.0 s |
+| 2s | 0.55s |
+| 5s | 0.56s |
+| 11s | 0.63s |
 
-The warm server is the whole design. A cold start costs more than the
-transcription itself, which is why `install.sh` installs a `KeepAlive` agent.
+Nearly flat, because whisper always pads its input to a 30-second window. The
+practical upshot: **say the whole thought in one go.** Five short takes cost
+five times as much as one long one.
 
-**Why not ffmpeg for capture:** `ffmpeg -f avfoundation` drops ~10% of the
-stream continuously here — 0.41 s lost of 3 s, 1.50 s lost of 12 s — which
-corrupts speech throughout the take. `flowrec` loses ~0.11 s at startup and
-then nothing. That measurement is why `src/flowrec.swift` exists.
+Full path from letting go of the key to seeing text is about **0.6s**. The
+first take after a long idle is slower, around 1.4s, while the model is paged
+back in.
 
-## Layout
+## What it costs to run
 
-    src/flowrec.swift      mic -> 16 kHz mono WAV; RMS on stdout for the meter
-    bin/flow-stt           WAV -> transcript, via the whisper server
-    hammerspoon/flow.lua   hotkey, state machine, paste
-    hammerspoon/flow_hud.lua  the pill: waveform, pulse, fades
-    launchd/*.plist        the warm whisper server (port 2032)
-    selftest.sh            end-to-end check without touching the keyboard
+| | |
+|---|---|
+| Memory | 1.7 GB, held so transcription stays fast |
+| CPU, idle | 0.1% of one core |
+| CPU, while you speak | 5.5% of one core |
+| Disk | 336 KB, plus a model you likely already have |
+| Money | nothing |
+
+## Installing
+
+You need macOS on Apple silicon, [Hammerspoon](https://www.hammerspoon.org),
+`jq`, and a [whisper.cpp](https://github.com/ggerganov/whisper.cpp) build with
+the `large-v3-turbo` model.
+
+```sh
+git clone https://github.com/kuldeeepy/whisperly
+cd whisperly
+./install.sh
+```
+
+Then two things the installer cannot do for you:
+
+1. Hammerspoon menu bar icon → **Reload Config**
+2. System Settings → Privacy & Security → give Hammerspoon **Microphone** and
+   **Accessibility**
+
+That microphone permission is the one that bites. Without it you get silence
+and no error at all, because a helper started by Hammerspoon never raises its
+own prompt. `./selftest.sh` checks for exactly this and says so plainly.
+
+If your whisper build lives somewhere else:
+
+```sh
+WHISPERLY_WHISPER_DIR=/path/to/whisper.cpp ./install.sh
+```
 
 ## Behaviour
 
-- **Hold fn past `tapSeconds`** and recording starts; releasing transcribes.
-- **Double-tap fn** starts a hands-free take; **a single tap** ends it.
-- **Esc** cancels a take without transcribing.
-- A **lone fn tap does nothing** — it takes two, inside `doubleTapGap`.
-- **fn held as a modifier is never a tap**, so fn+Space, fn+arrows and the
-  F-key row all behave normally. The existing fn+Space quick-capture binding is
-  untouched. If a chord starts mid-hold, the take is dropped.
-- The fn/globe key reports **63** in `flagsChanged` but emits its own keyDown as
-  **179**. Both are in `config.selfKeys` and neither counts as a chord partner —
-  without that, every tap looks like a chord and double-tap never fires.
-- **Takes under 0.4 s are discarded** as accidental taps.
-- The pill only appears once the mic is genuinely delivering samples, so it is
-  real feedback rather than an optimistic guess.
-
-## The pill
-
-The level scales to a decaying peak rather than a fixed full-scale constant: a
-constant is wrong for every voice, mic distance and room, and being wrong either
-pins the bars flat or saturates them. Attack is fast and release slow, which is
-what makes a meter look like it is following speech instead of smearing it.
-
-Bottom-centre, 120x32, 22 pt off the bottom edge. A scrolling waveform while
-listening at 30 samples/s, newest on the right; a soft travelling pulse while
-transcribing; 0.12s fade in, 0.18s out.
-
-Cost is bounded by construction. While listening there is **no timer at all** --
-the waveform is driven by the RMS lines flowrec already prints, which the
-pipeline pays for regardless. The only timer runs during transcription, at
-25 fps for the ~0.7s it lasts, and is stopped the instant it ends. At rest the
-canvas is hidden and nothing is scheduled.
-
-Measured on this machine, Hammerspoon CPU:
-
-| | CPU | of one core |
-|---|---|---|
-| true idle, nothing shown | 0.01 s / 10 s | 0.1% |
-| recording, static pill | 0.11 s / 11 s | 1.0% |
-| recording, waveform live | 0.60 s / 11 s | 5.5% |
-
-So the waveform costs ~4.5% of one core, only while you are actually speaking,
-and nothing at all at rest. Bars whose height has not visibly moved are not
-rewritten, which halved the cost of a take (1.15 s -> 0.58 s per 11 s) and makes
-pauses nearly free.
-
-Two things were tried and rejected on measurement. Drawing the waveform as one
-filled `segments` shape, on the theory that N element writes mean N redraws,
-measured *worse* -- 0.47 s net against 0.28 s -- because rebuilding a 32-point
-coordinate table each frame costs more across the Lua/ObjC bridge than 16 frame
-writes. And the canvas is built once and reused, never rebuilt on show.
-- Whisper's stock near-silence outputs ("Thank you.", "[BLANK_AUDIO]", …) are
-  filtered in `config.hallucinations`.
-- The clipboard is saved before pasting and restored 150 ms later.
+- Takes under 0.4s are ignored, so a stray key press does nothing.
+- A single `fn` tap does nothing. It takes two, close together.
+- Holding `fn` as part of a shortcut never starts a take, so `fn`+Space,
+  `fn`+arrows and the F-key row all still work.
+- The pill only appears once the mic is really sending audio, so it is honest
+  feedback rather than a guess. Wait for it before you speak.
+- Whisper's usual inventions on silence ("Thank you.", "[BLANK_AUDIO]") are
+  filtered out.
+- A take stops on its own after two minutes.
 
 ## What is kept
 
-Nothing. No transcript is ever written to disk — not by flow, and not by the
-whisper server, which logs only the filename, sample count and duration. The
-Hammerspoon console records a character count, never the text.
+Nothing. No transcript is written to disk, not by Whisperly and not by the
+whisper server, which logs only file names and durations. The Hammerspoon
+console shows a character count, never your words.
 
-Each recording lives in `/tmp/flow` (mode 0700) and is deleted as soon as it has
-been transcribed. Any WAV still there at load was orphaned by a reload or crash
-and is swept on startup.
+Recordings live in `/tmp/whisperly` (mode 0700) and are deleted the moment they
+are transcribed. Anything left there by a crash is cleared at startup.
 
-The one moment the text is exposed is the ~150 ms it sits on the pasteboard for
-the ⌘V. A clipboard manager would capture it in that window; none is running
-here. There is no history, so there is also no undo and no way to recover a
-take you have lost.
+The one exposure is the ~150ms your text spends on the clipboard during the
+paste. A clipboard manager would catch it in that window. There is no history,
+so there is also no undo.
 
-## Config
+## Layout
 
-Top of `hammerspoon/flow.lua`:
+```
+src/recorder.swift          the recorder, source
+bin/recorder                the recorder, built (not checked in)
+bin/transcribe              sends a wav to whisper, prints the text
+hammerspoon/whisperly.lua      key handling, state, pasting
+hammerspoon/whisperly_hud.lua  the pill
+launchd/                    keeps whisper running across reboots
+install.sh / uninstall.sh
+selftest.sh                 checks the whole chain, no keyboard needed
+```
 
-- `key = 63` — fn. `54` is Right ⌘, `61` is Right ⌥.
-- `tapSeconds = 0.4` — release sooner and it is a tap; hold longer and
-  recording starts. Measured taps here run 0.09-0.13s, so there is plenty
-  of headroom.
-- `doubleTapGap = 0.6` — raise it if double-tap feels too strict.
-- `debug = true` — logs every fn press duration, gap and chord key. This is
-  what to reach for when a trigger misbehaves.
+## Settings
 
-This relies on the fn key doing nothing system-wide
-(`defaults read com.apple.HIToolbox AppleFnUsageType` -> `0`). If it is set to
-show the emoji picker or start Apple's dictation, change it in
-System Settings -> Keyboard -> "Press fn key to".
+Top of `hammerspoon/whisperly.lua`:
 
-To save ~1.6 GB of RAM by reusing voicemode's whisper instead of flow's own:
+- `tapSeconds` (0.4) — let go before this and it counts as a tap; keep holding
+  and recording starts
+- `doubleTapGap` (0.6) — raise it if your second tap keeps getting missed
+- `key` (63) — `fn`. Use 54 for right `⌘`, 61 for right `⌥`
+- `debug` — logs every `fn` press timing. Reach for this first when a trigger
+  misbehaves
 
-    launchctl bootout gui/$(id -u)/cc.kuldeep.flow.whisper
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.voicemode.whisper.plist
-    # then set FLOW_WHISPER_URL=http://127.0.0.1:2022 in bin/flow-stt
+The pill's size, position and colours are at the top of `whisperly_hud.lua`.
 
-## Status
+This assumes `fn` does nothing on its own
+(`defaults read com.apple.HIToolbox AppleFnUsageType` → `0`). If yours opens
+the emoji picker or Apple's dictation, change it under System Settings →
+Keyboard → "Press fn key to".
 
-Phase 1: raw transcription pasted at the cursor. The LLM cleanup pass
-(punctuation, fillers, app-aware tone, personal dictionary) is Phase 2 and
-slots in between `flow-stt` and `paste`.
+## Notes from building it
 
-## Uninstall
+Things that cost real time to work out, kept here so they are not
+rediscovered:
 
-    launchctl bootout gui/$(id -u)/cc.kuldeep.flow.whisper
-    rm ~/Library/LaunchAgents/cc.kuldeep.flow.whisper.plist ~/.hammerspoon/flow.lua
-    # remove the require("flow") line from ~/.hammerspoon/init.lua
+**ffmpeg cannot record this.** `ffmpeg -f avfoundation` drops about 10% of the
+audio continuously — 0.41s lost from 3s, 1.50s from 12s. Not just at the edges;
+it mangles words all the way through. That is the whole reason there is a Swift
+recorder.
+
+**The `fn` key has two identities.** It reports keycode 63 when held, but sends
+its own key press as **179**. Anything watching for "did you press another
+key?" sees fn itself and gets confused. Double-tap silently never worked until
+this was found, and synthetic test events do not reproduce it — only a real
+finger does.
+
+**A recorder can outlive its parent.** If Hammerspoon reloads mid-take the
+recorder gets adopted by launchd, and without a watchdog it holds the mic open
+forever and grows the file at 32 KB/s. It now exits when orphaned.
+
+**One filled shape is slower than 18 rectangles.** Drawing the waveform as a
+single path seemed obviously cheaper. Measured, it was worse — 0.47s of CPU
+against 0.28s — because rebuilding the path every frame costs more than moving
+the bars.
+
+## Not done yet
+
+The text is raw transcription. No filler removal, no reflowing, no personal
+vocabulary. That is the next piece, and it slots in between `transcribe` and
+the paste.
+
+## Licence
+
+MIT.

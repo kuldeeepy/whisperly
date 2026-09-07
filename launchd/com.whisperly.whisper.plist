@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>cc.kuldeep.flow.whisper</string>
+    <string>com.whisperly.whisper</string>
 
-    <!-- Kept warm on purpose: a cold start costs ~1.0s to load the model and
-         compile the Core ML encoder, which is most of the dictation budget. -->
+    <!-- Kept running on purpose. Starting cold costs about a second to load
+         the model, which is longer than transcribing usually takes. -->
     <key>ProgramArguments</key>
     <array>
         <string>__WHISPER_DIR__/build/bin/whisper-server</string>

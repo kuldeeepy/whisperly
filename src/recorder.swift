@@ -1,14 +1,12 @@
-// flowrec <out.wav>
+// recorder <out.wav>
 //
-// Records the default input device to a 16 kHz mono 16-bit WAV until it
-// receives SIGTERM or SIGINT, then flushes and exits 0.
+// Records the default mic to a 16 kHz mono WAV until it is told to stop.
+// Prints the current loudness to stdout so the caller can draw a meter.
 //
-// Why not ffmpeg: `ffmpeg -f avfoundation` drops ~10% of the stream on this
-// machine (measured: 0.41s lost of 3s, 1.50s lost of 12s), which corrupts
-// speech throughout the take rather than only at the edges.
-//
-// stdout carries one `<rms>` line per ~33 ms for the caller's level meter.
-// stderr carries the final duration in seconds.
+// Why not just use ffmpeg: `ffmpeg -f avfoundation` drops about 10% of the
+// audio as it goes (measured: 0.41s lost from 3s, 1.50s lost from 12s), which
+// mangles words all through the take. This loses ~0.11s at the start and
+// nothing after that.
 
 import AVFoundation
 import Accelerate
@@ -17,16 +15,16 @@ import Dispatch
 import Foundation
 
 let sampleRate = 16000.0
-let meterInterval = 0.033
-let maxSeconds = 600.0        // hard cap, independent of any caller
+let meterInterval = 0.033   // how often to print a loudness reading
+let maxSeconds = 600.0      // hard limit, whatever the caller does
 let watchdogInterval = 2.0
 
 func die(_ message: String) -> Never {
-    FileHandle.standardError.write(Data("flowrec: \(message)\n".utf8))
+    FileHandle.standardError.write(Data("recorder: \(message)\n".utf8))
     exit(1)
 }
 
-guard CommandLine.arguments.count == 2 else { die("usage: flowrec <out.wav>") }
+guard CommandLine.arguments.count == 2 else { die("usage: recorder <out.wav>") }
 let outputURL = URL(fileURLWithPath: CommandLine.arguments[1])
 
 let engine = AVAudioEngine()
@@ -35,6 +33,7 @@ let hardwareFormat = input.outputFormat(forBus: 0)
 
 guard hardwareFormat.sampleRate > 0 else { die("no input device available") }
 
+// The mic runs at its own rate, so everything is resampled down to 16 kHz.
 guard let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                     sampleRate: sampleRate,
                                     channels: 1,
@@ -42,9 +41,8 @@ guard let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
       let converter = AVAudioConverter(from: hardwareFormat, to: tapFormat)
 else { die("cannot resample \(hardwareFormat.sampleRate) Hz to \(sampleRate) Hz") }
 
-// processingFormat is float32 @ 16 kHz; the file on disk is 16-bit PCM.
-// Optional so it can be released on stop: AVAudioFile finalises the WAV
-// header on deallocation, and exit() alone would leave a 0-frame header.
+// Optional so it can be closed on demand. AVAudioFile writes the WAV header
+// when it is released, and calling exit() alone would leave an empty file.
 var file: AVAudioFile?
 do {
     file = try AVAudioFile(forWriting: outputURL,
@@ -62,11 +60,11 @@ do {
     die("cannot open \(outputURL.path): \(error.localizedDescription)")
 }
 
-// The tap runs on a realtime thread: no allocation-heavy work, no locks.
 let ratio = sampleRate / hardwareFormat.sampleRate
 var framesWritten: AVAudioFramePosition = 0
 var lastMeter = Date.distantPast
 
+// This runs on the audio thread, so it stays cheap: convert, write, measure.
 input.installTap(onBus: 0, bufferSize: 1024, format: hardwareFormat) { buffer, _ in
     let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
     guard let out = AVAudioPCMBuffer(pcmFormat: tapFormat, frameCapacity: capacity) else { return }
@@ -87,10 +85,9 @@ input.installTap(onBus: 0, bufferSize: 1024, format: hardwareFormat) { buffer, _
     do { try file?.write(from: out) } catch { return }
     framesWritten += AVAudioFramePosition(out.frameLength)
 
-    let now = Date()
-    guard now.timeIntervalSince(lastMeter) >= meterInterval,
+    guard Date().timeIntervalSince(lastMeter) >= meterInterval,
           let samples = out.floatChannelData?[0] else { return }
-    lastMeter = now
+    lastMeter = Date()
 
     var meanSquare: Float = 0
     vDSP_measqv(samples, 1, &meanSquare, vDSP_Length(out.frameLength))
@@ -104,22 +101,18 @@ do {
     die("cannot start audio engine: \(error.localizedDescription)")
 }
 
-// Ignore the signals at the C level so the Dispatch sources own them.
-signal(SIGTERM, SIG_IGN)
-signal(SIGINT, SIG_IGN)
-
 let stop = {
-    input.removeTap(onBus: 0)   // synchronous: no tap is in flight after this
+    input.removeTap(onBus: 0)   // returns only once the tap is done
     engine.stop()
-    file = nil                  // flushes and writes the final WAV header
-    let seconds = Double(framesWritten) / sampleRate
-    FileHandle.standardError.write(Data(String(format: "%.3f\n", seconds).utf8))
+    file = nil                  // closes the file and writes the WAV header
+    FileHandle.standardError.write(
+        Data(String(format: "%.3f\n", Double(framesWritten) / sampleRate).utf8))
     exit(0)
 }
 
-// Nothing above guarantees a caller ever sends SIGTERM: if Hammerspoon
-// reloads or crashes mid-take, this process is reparented to launchd and would
-// otherwise hold the microphone open forever, growing the file at 32 KB/s.
+// Nobody is guaranteed to send us a stop signal. If the parent dies we get
+// adopted by launchd, and without this we would hold the mic open forever and
+// grow the file at 32 KB/s.
 let watchdog = DispatchSource.makeTimerSource(queue: .main)
 watchdog.schedule(deadline: .now() + watchdogInterval, repeating: watchdogInterval)
 watchdog.setEventHandler {
@@ -127,12 +120,16 @@ watchdog.setEventHandler {
 }
 watchdog.resume()
 
-let sources = [SIGTERM, SIGINT].map { sig -> DispatchSourceSignal in
+// Ignore the signals at the C level so the Dispatch sources can own them.
+signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+
+let signals = [SIGTERM, SIGINT].map { sig -> DispatchSourceSignal in
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     source.setEventHandler(handler: stop)
     source.resume()
     return source
 }
-_ = sources
+_ = signals
 
 dispatchMain()

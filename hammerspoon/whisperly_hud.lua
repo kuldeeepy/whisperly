@@ -1,16 +1,15 @@
--- flow_hud.lua — the dictation pill.
+-- The pill that appears while you dictate.
 --
--- Bottom-centre, dark, compact. A scrolling waveform while listening, a
--- travelling pulse while transcribing.
+-- Bottom of the screen, small and dark. A waveform that scrolls while it
+-- listens, and a soft pulse while it thinks.
 --
--- Cost, by construction:
---   listening    — no timer at all. Driven entirely by the RMS lines flowrec
---                  already emits (~15/s), which the pipeline pays for anyway.
---   transcribing — one 25 fps timer, alive for the ~0.7s a transcription takes,
---                  stopped the instant it ends.
---   idle         — canvas hidden, nothing scheduled, no observers, no threads.
+-- It is cheap on purpose:
+--   listening    no timer at all, it rides the loudness readings the recorder
+--                already sends
+--   transcribing one timer at 25 fps, for the ~0.7s a transcription takes
+--   idle         hidden, nothing scheduled, nothing running
 --
--- The canvas is built once and reused; showing it never reallocates.
+-- Measured: 0.1% of a core idle, 5.5% while a waveform is moving.
 
 local hud = {}
 
@@ -18,16 +17,16 @@ local BARS      = 18
 local BAR_W     = 2
 local BAR_GAP   = 2.6
 local W, H      = 120, 32
-local MARGIN    = 22      -- gap from the bottom of the screen
-local MAX_HALF  = 9       -- tallest half-bar, in points
-local MIN_HALF  = 1       -- a resting bar is a dot, never nothing
-local CURVE     = 0.65    -- <1 lifts quiet speech into visible range
-local ATTACK    = 0.70    -- rise fast, so consonants read as hits
-local RELEASE   = 0.22    -- fall slowly, so the shape stays legible
-local NOISE     = 0.006   -- below this is room tone, not speech
-local MIN_PEAK  = 0.030   -- floor on the reference, so a whisper cannot
-                          -- be stretched to full height
-local PEAK_FALL = 0.995   -- per sample; the reference forgets over ~3s
+local MARGIN    = 22      -- distance from the bottom of the screen
+local MAX_HALF  = 9       -- tallest a bar gets, measured from the middle
+local MIN_HALF  = 1       -- a quiet bar is a dot, never nothing
+local CURVE     = 0.65    -- below 1 lifts quiet speech into view
+local ATTACK    = 0.70    -- rise quickly, so hard consonants show
+local RELEASE   = 0.22    -- fall slowly, so the shape stays readable
+local NOISE     = 0.006   -- below this is room noise, not you
+local MIN_PEAK  = 0.030   -- floor on the reference, so a whisper is not
+                          -- stretched to full height
+local PEAK_FALL = 0.995   -- per reading, so the reference forgets over ~3s
 local PULSE_FPS = 25
 
 local LISTEN = { white = 0.96, alpha = 0.92 }
@@ -35,10 +34,10 @@ local WORK   = { red = 0.45, green = 0.72, blue = 1.0, alpha = 0.95 }
 
 local canvas, screenFrame, pulseTimer
 local levels, lastLevel, peak = {}, 0, MIN_PEAK
-local drawn = {}          -- last height written per bar, to skip no-op writes
+local drawn = {}          -- last height drawn per bar, to skip pointless writes
 local mode, pulseAt = nil, 0
 
--- Layout --------------------------------------------------------------------
+-- Layout ----------------------------------------------------------------------
 
 local function halfAt(i)
   return MIN_HALF + (MAX_HALF - MIN_HALF) * levels[i]
@@ -57,18 +56,16 @@ local function build()
       roundedRectRadii = { xRadius = H / 2, yRadius = H / 2 },
       fillColor = { white = 0.07, alpha = 0.94 },
       frame = { x = 0, y = 0, w = W, h = H } },
-    -- A hairline rim keeps the pill readable on a dark wallpaper.
+    -- A faint rim so the pill still reads on a dark wallpaper.
     { type = "rectangle", action = "stroke", strokeWidth = 1,
       roundedRectRadii = { xRadius = H / 2, yRadius = H / 2 },
       strokeColor = { white = 1, alpha = 0.12 },
       frame = { x = 0.5, y = 0.5, w = W - 1, h = H - 1 } }
   )
 
-  -- Discrete bars, not one filled `segments` shape. That was tried on the
-  -- assumption N element writes meant N redraws; measured over a 6s window it
-  -- was worse -- 0.47s of CPU against 0.28s for bars -- because rebuilding a
-  -- 32-point coordinate table each frame costs more crossing the Lua/ObjC
-  -- bridge than 16 frame writes do.
+  -- Separate bars, not one filled shape. The single-shape version was tried
+  -- and measured worse: 0.47s of CPU against 0.28s, because rebuilding a
+  -- 32-point path every frame costs more than moving 18 rectangles.
   for i = 1, BARS do
     canvas:appendElements({
       type = "rectangle", action = "fill",
@@ -83,7 +80,7 @@ local function build()
   canvas:behavior(hs.canvas.windowBehaviors.canJoinAllSpaces)
 end
 
--- Only moves when the screen actually changed, so showing costs nothing.
+-- Only moves when the screen actually changed, so showing it is free.
 local function position()
   local f = hs.screen.mainScreen():frame()
   if screenFrame and f.x == screenFrame.x and f.y == screenFrame.y
@@ -92,11 +89,8 @@ local function position()
   canvas:frame({ x = f.x + (f.w - W) / 2, y = f.y + f.h - H - MARGIN, w = W, h = H })
 end
 
--- Bars are elements 3..N+2; 1 and 2 are the pill and its rim.
---
--- Each frame assignment crosses into ObjC and invalidates the canvas, so bars
--- that have not visibly moved are left alone. During a pause that is every
--- bar, which is a real share of any take.
+-- Bars are elements 3 onwards; 1 and 2 are the pill and its rim.
+-- Bars that have not visibly moved are left alone, which makes pauses cheap.
 local function render(color)
   for i = 1, BARS do
     local half = halfAt(i)
@@ -119,7 +113,7 @@ local function clear()
   peak = MIN_PEAK
 end
 
--- States --------------------------------------------------------------------
+-- States -----------------------------------------------------------------------
 
 function hud.listening()
   if not canvas then build() end
@@ -131,12 +125,11 @@ function hud.listening()
   canvas:show(0.12)
 end
 
--- Called from flowrec's stdout, so the waveform costs no timer of its own.
+-- Fed by the recorder's own output, so the waveform needs no timer.
 --
--- The reference level adapts: a fixed full-scale constant is wrong for every
--- voice, mic distance and room, and being wrong either pins the bars flat or
--- saturates them. Tracking a decaying peak makes the waveform scale to
--- whatever this speaker actually produces.
+-- The scale follows a fading peak rather than a fixed number. A fixed number
+-- is wrong for every voice, mic and room, and being wrong either flattens the
+-- bars or pins them at the top.
 function hud.level(rms)
   if mode ~= "listening" then return end
   rms = rms or 0
@@ -145,11 +138,11 @@ function hud.level(rms)
   local span = peak - NOISE
   local target = span > 0 and math.min(1, math.max(0, rms - NOISE) / span) ^ CURVE or 0
 
-  -- Fast attack, slow release: the asymmetry is what makes a meter look like
-  -- it is following speech rather than smearing it.
+  -- Rise fast, fall slow. That difference is what makes it look like it is
+  -- following speech instead of smearing it.
   lastLevel = lastLevel + (target - lastLevel) * (target > lastLevel and ATTACK or RELEASE)
 
-  table.remove(levels, 1)       -- scroll left, newest on the right
+  table.remove(levels, 1)   -- scroll left, newest on the right
   levels[BARS] = lastLevel
   render()
 end
@@ -161,8 +154,8 @@ function hud.transcribing()
   render(WORK)
   canvas:show(0.1)
 
-  -- A soft bump travelling left to right: enough motion to read as "working"
-  -- without the busy spin of a spinner.
+  -- A soft bump travelling across: enough movement to read as "working"
+  -- without a spinner's fuss.
   pulseAt = -0.25
   pulseTimer = hs.timer.doEvery(1 / PULSE_FPS, function()
     pulseAt = pulseAt + 0.05

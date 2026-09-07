@@ -1,2 +1,4 @@
+bin/recorder
 bin/flowrec
 *.wav
+.DS_Store

@@ -1,0 +1,23 @@
+#!/bin/sh
+# transcribe <file.wav> — prints the text, and nothing else.
+#
+# Says clearly when the server is unreachable, so the caller can tell that
+# apart from "you recorded silence".
+
+set -eu
+
+WAV=${1:?usage: transcribe <file.wav>}
+URL=${WHISPERLY_URL:-http://127.0.0.1:2032}
+
+RESPONSE=$(
+  curl -sS --fail --max-time 30 \
+    -F file=@"$WAV" \
+    -F temperature=0 \
+    -F response_format=json \
+    "$URL/inference"
+) || {
+  echo "transcribe: no whisper server at $URL" >&2
+  exit 1
+}
+
+printf '%s' "$RESPONSE" | jq -r '.text // empty'
