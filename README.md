@@ -146,12 +146,18 @@ the speed.
 
 Two downloads, about 2.7 GB together. Slow connection, go make tea.
 
+The first is the model itself. The second is its encoder again, rebuilt to run
+on your Mac's Neural Engine — the same half of the model, in a form the AI chip
+can execute. Measured here it takes the encoder from 1,117ms to 730ms, about
+35% faster, which is roughly 0.4s off every sentence you dictate.
+
 ```sh
 sh ./models/download-ggml-model.sh large-v3-turbo
 sh ./models/download-coreml-model.sh large-v3-turbo
 ```
 
-Both are needed. Check it works:
+Skipping the second one still works — it quietly falls back to the GPU — but
+everything gets noticeably slower. Check it works:
 
 ```sh
 ./build/bin/whisper-cli -m models/ggml-large-v3-turbo.bin -f samples/jfk.wav -nt
